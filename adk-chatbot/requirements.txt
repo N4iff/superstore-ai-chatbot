@@ -1,0 +1,18 @@
+# Google ADK and AI
+google-adk>=1.18.0
+google-generativeai
+litellm  # required for LiteLlm model connector (OpenAI, etc.)
+
+# Database
+psycopg2-binary==2.9.9
+
+# Configuration
+python-dotenv==1.0.0
+
+# Discord Integration
+discord.py==2.3.2
+
+# Gmail Integration (compatible with ADK 1.18.0)
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+google-api-python-client>=2.157.0
