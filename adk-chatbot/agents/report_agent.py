@@ -1,6 +1,6 @@
 """
 Report Agent - Generates executive summary reports
-Returns raw status for Parent to validate
+SUPPORTS: Analytics Reports + Compliance Reports
 """
 import asyncio
 from datetime import datetime
@@ -13,12 +13,12 @@ from config.settings import OPENAI_API_KEY
 
 
 def create_report_agent() -> LlmAgent:
-    """Create Report agent."""
+    """Create Report agent with both analytics and compliance report capabilities."""
 
-    async def generate_and_send_report(
+    async def generate_analytics_report(
         question: str, results: str, insight: str
     ) -> str:
-        """Generate HTML report and send to Discord. Returns STATUS/RESULTS/INSIGHT."""
+        """Generate HTML analytics report and send to Discord."""
         from integrations.discord_integration import send_report_for_approval
 
         today = datetime.now().strftime("%B %d, %Y")
@@ -54,7 +54,6 @@ Rules:
 """
         
         try:
-            # Generate report (sync OpenAI call inside async tool is acceptable here)
             client = openai.OpenAI(api_key=OPENAI_API_KEY)
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -69,7 +68,6 @@ Rules:
 
             html_report = response.choices[0].message.content
 
-            # Send to Discord (await the coroutine inside existing event loop)
             try:
                 sent = await asyncio.wait_for(
                     send_report_for_approval(html_report, question=question),
@@ -77,51 +75,122 @@ Rules:
                 )
 
                 if sent:
-                    return (
-                        "STATUS: success\n"
-                        "RESULTS: Report sent to Discord for approval\n"
-                        "INSIGHT: Check Discord channel"
-                    )
-                return (
-                    "STATUS: error\n"
-                    "RESULTS: Failed to send to Discord\n"
-                    "INSIGHT: Check bot token/channel ID"
-                )
+                    return "STATUS: success\nRESULTS: Analytics report sent to Discord\nINSIGHT: Check Discord for approval"
+                return "STATUS: error\nRESULTS: Failed to send to Discord\nINSIGHT: Check bot token/channel ID"
 
             except asyncio.TimeoutError:
-                return (
-                    "STATUS: error\n"
-                    "RESULTS: Discord timeout while sending report\n"
-                    "INSIGHT: Try again later or check connectivity"
-                )
+                return "STATUS: error\nRESULTS: Discord timeout\nINSIGHT: Try again later"
             except Exception as e:
-                return (
-                    "STATUS: error\n"
-                    f"RESULTS: Discord error: {str(e)}\n"
-                    "INSIGHT: Check configuration"
-                )
+                return f"STATUS: error\nRESULTS: Discord error: {str(e)}\nINSIGHT: Check configuration"
 
         except Exception as e:
-            return (
-                "STATUS: error\n"
-                f"RESULTS: Report generation failed: {str(e)}\n"
-                "INSIGHT: Check OpenAI API"
-            )
+            return f"STATUS: error\nRESULTS: Report generation failed: {str(e)}\nINSIGHT: Check OpenAI API"
     
-    report_tool = FunctionTool(func=generate_and_send_report)
+
+    async def generate_compliance_report(compliance_summary: str) -> str:
+        """Generate HTML compliance report and send to Discord."""
+        from integrations.discord_integration import send_report_for_approval
+
+        today = datetime.now().strftime("%B %d, %Y")
+
+        report_instruction = f"""
+You are a Compliance Report Writer specializing in AI Ethics.
+Create a professional compliance consultation report in HTML (bilingual: Arabic & English).
+
+Structure:
+<h1>📋 تقرير استشارة الامتثال - مبادئ سدايا<br>Compliance Consultation Report - SDAIA AI Principles</h1>
+<p><strong>DATE / التاريخ:</strong> {today}<br><strong>PREPARED BY / أعد بواسطة:</strong> AI Compliance System</p>
+<hr>
+
+<h2>📌 ملخص تنفيذي / Executive Summary</h2>
+<p>[1-2 sentences in Arabic and English about the consultation]</p>
+<hr>
+
+<h2>📖 الاستشارات والمراجع / Consultations & References</h2>
+[For each Q&A, create a section:]
+<div class="compliance-item">
+<h3>السؤال / Question [N]:</h3>
+<p>[question text]</p>
+<h3>الإجابة / Answer:</h3>
+<p>[answer with highlights for key principles]</p>
+<p><strong>📖 المراجع / References:</strong> صفحة [X], صفحة [Y]</p>
+</div>
+<hr>
+
+<h2>✅ الخلاصة / Summary</h2>
+<p>تمت استشارة [X] أسئلة حول مبادئ أخلاقيات الذكاء الاصطناعي<br>
+Consulted on [X] questions about AI ethics principles</p>
+
+Rules:
+- Bilingual (Arabic + English)
+- Highlight key principles
+- Include page citations
+- Output ONLY HTML (no preamble)
+"""
+        
+        try:
+            client = openai.OpenAI(api_key=OPENAI_API_KEY)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": report_instruction},
+                    {
+                        "role": "user",
+                        "content": f"Compliance Summary:\n\n{compliance_summary}",
+                    },
+                ],
+            )
+
+            html_report = response.choices[0].message.content
+
+            try:
+                sent = await asyncio.wait_for(
+                    send_report_for_approval(html_report, question="SDAIA Compliance Consultation"),
+                    timeout=12.0,
+                )
+
+                if sent:
+                    return "STATUS: success\nRESULTS: Compliance report sent to Discord\nINSIGHT: SDAIA consultation summary delivered"
+                return "STATUS: error\nRESULTS: Failed to send to Discord\nINSIGHT: Check bot token/channel ID"
+
+            except asyncio.TimeoutError:
+                return "STATUS: error\nRESULTS: Discord timeout\nINSIGHT: Try again later"
+            except Exception as e:
+                return f"STATUS: error\nRESULTS: Discord error: {str(e)}\nINSIGHT: Check configuration"
+
+        except Exception as e:
+            return f"STATUS: error\nRESULTS: Failed: {str(e)}\nINSIGHT: Check OpenAI API"
+    
+    # Create tools
+    analytics_report_tool = FunctionTool(func=generate_analytics_report)
+    compliance_report_tool = FunctionTool(func=generate_compliance_report)
     
     instruction = """
-You are a Report Generation Specialist.
+You handle TWO types of reports:
 
-When you receive a request, extract QUESTION, RESULTS, and INSIGHT from it (they may be labeled "QUESTION:", "RESULTS:", "INSIGHT:" or similar). Then:
-1. Call generate_and_send_report(question=..., results=..., insight=...) with those three values
-2. Return ONLY the exact string the tool returns (the STATUS/RESULTS/INSIGHT block). No preamble, no "I have sent...", no extra words. The Parent will pass this to the validator; it must see the raw STATUS line.
+1. ANALYTICS REPORTS (Business Data)
+2. COMPLIANCE REPORTS (SDAIA AI Ethics)
+
+IDENTIFY TYPE:
+
+ANALYTICS:
+- Has: "QUESTION:", "RESULTS:", "INSIGHT:"
+- About: sales, profit, business metrics
+→ Use: generate_analytics_report(question, results, insight)
+
+COMPLIANCE:
+- Has SDAIA Q&As in Arabic/English
+- About: AI ethics, data protection
+- Has citations: "صفحة X"
+→ Use: generate_compliance_report(compliance_summary)
+
+CRITICAL: Return ONLY the exact STATUS/RESULTS/INSIGHT from the tool. No extra text.
 """
     
     return LlmAgent(
         name="report_agent",
         model=LiteLlm(model=MODEL_NAME),
         instruction=instruction,
-        tools=[report_tool],
-        description="Generates executive summary reports and sends to Discord."
+        tools=[analytics_report_tool, compliance_report_tool],
+        description="Generates analytics and compliance reports, sends to Discord."
     )

@@ -53,7 +53,7 @@ DATABASE SCHEMA (CRITICAL)
 --------------------------------
 Table: v_processed_superstore
 
- SAFE columns you CAN use:
+✅ SAFE columns you CAN use:
 - id (integer)
 - raw_id (text)
 - ship_mode (text) - values: 'First Class', 'Second Class', 'Standard Class', 'Same Day'
