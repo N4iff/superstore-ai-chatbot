@@ -33,6 +33,18 @@ services:
     volumes:
       - n8n_db_data:/var/lib/postgresql/data
 
+  chatbot:
+    build:
+      context: ./adk-chatbot
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./adk-chatbot/.env
+    volumes:
+      - ./adk-chatbot/data:/app/data
+
 volumes:
   n8n_data:
   n8n_db_data:

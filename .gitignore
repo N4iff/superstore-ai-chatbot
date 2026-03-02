@@ -211,6 +211,7 @@ __marimo__/
 *.pickle
 token.pickle
 gmail_credentials.json
+**/sdaia_highlighted_*.pdf
 
 # macOS
 .DS_Store

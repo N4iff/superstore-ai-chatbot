@@ -5,6 +5,7 @@ import discord
 from discord import Client, Intents, Interaction
 from discord.ui import Button, View
 import asyncio
+import io
 from config.settings import DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID
 
 
@@ -112,12 +113,23 @@ class DiscordReportClient:
             return False
         view = ReportApprovalView(report_html=report_html, question=question)
         try:
-            await channel.send(
+            msg = (
                 "📊 **New Report Ready for Review**\n\n"
-                "Please review the report and click Approve or Reject.\n\n"
-                f"```html\n{report_html[:1900]}\n```",
-                view=view,
+                "Please review the attached report and click Approve or Reject."
             )
+
+            if len(report_html) <= 1500:
+                await channel.send(
+                    f"{msg}\n\n```html\n{report_html}\n```",
+                    view=view,
+                )
+            else:
+                html_file = discord.File(
+                    io.BytesIO(report_html.encode("utf-8")),
+                    filename="report.html",
+                )
+                await channel.send(msg, view=view, file=html_file)
+
             print(f"Discord: Report posted to channel {getattr(channel, 'name', self.channel_id)}.")
             return True
         except Exception as e:
