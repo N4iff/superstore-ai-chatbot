@@ -15,11 +15,7 @@ openai.api_key = OPENAI_API_KEY
 
 def create_compliance_agent() -> LlmAgent:
     """Create Compliance agent with RAG and automatic PDF highlighting"""
-    
-    # Initialize ChromaDB
-    client = chromadb.PersistentClient(path="data/chroma_db")
-    collection = client.get_collection(name="sdaia_ai_principles")
-    
+
     def ask_sdaia(question: str) -> str:
         """
         Answer questions about SDAIA AI principles using RAG
@@ -30,6 +26,19 @@ def create_compliance_agent() -> LlmAgent:
         Returns:
             Structured response with question, context, and answer
         """
+        # Lazily initialize Chroma so the web server can boot even if the local
+        # persisted DB is missing/corrupted (Chroma can panic in its Rust layer).
+        try:
+            client = chromadb.PersistentClient(path="data/chroma_db")
+            collection = client.get_collection(name="sdaia_ai_principles")
+        except Exception as e:
+            # Keep the failure visible, but return a usable response instead of
+            # crashing the whole process.
+            return f"""VALIDATION_FORMAT:
+QUESTION: {question}
+CONTEXT: (Vector DB unavailable: {type(e).__name__}: {e})
+ANSWER: لم أتمكن من الوصول إلى قاعدة بيانات المتجهات. شغّل `python scripts/create_vector_db.py` لإنشائها/إعادة إنشائها ثم أعد المحاولة."""
+
         # Create query embedding
         response = openai.embeddings.create(
             input=[question],

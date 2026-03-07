@@ -215,3 +215,7 @@ gmail_credentials.json
 
 # macOS
 .DS_Store
+
+# Node / frontend
+node_modules/
+dist/

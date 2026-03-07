@@ -4,7 +4,6 @@ Uses OpenAI embeddings and ChromaDB for storage
 """
 import json
 import chromadb
-from chromadb.config import Settings
 import openai
 from pathlib import Path
 import os
@@ -56,7 +55,9 @@ def create_vector_db(chunks: list[dict], db_path: str = "data/chroma_db"):
     """
     print(f"\n📦 Creating ChromaDB at {db_path}...")
     
-    # Initialize ChromaDB client
+    # Initialize ChromaDB persistent client at the given path.
+    # We rely on Chroma's recommended PersistentClient API, and we always
+    # recreate the database from scratch for this script.
     client = chromadb.PersistentClient(path=db_path)
     
     # Create or get collection

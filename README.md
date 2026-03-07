@@ -1,3 +1,847 @@
+## BI + SDAIA Compliance Chatbot (Streaming, RAG, PDF Highlighting)
+
+An end‑to‑end AI assistant that combines **business analytics** and **AI ethics compliance** in a single, ChatGPT‑style experience.
+
+- Natural‑language analytics over the Superstore dataset (PostgreSQL)
+- SDAIA AI principles **RAG** assistant with page‑level PDF highlighting
+- Modern streaming chat UI (frontend) with **true token‑level streaming**
+- Multi‑agent orchestration using **Google ADK**
+- Human‑in‑the‑loop report workflow via **Discord + Gmail**
+- Fully containerized and deployable to **GCP** via **Coolify**
+
+---
+
+## Table of Contents
+
+- [1. Project Overview](#1-project-overview)
+- [2. High‑Level Architecture](#2-high-level-architecture)
+- [3. Repository Layout](#3-repository-layout)
+- [4. Prerequisites](#4-prerequisites)
+- [5. Local Development](#5-local-development)
+- [6. Docker & Deployment](#6-docker--deployment)
+- [7. AI & RAG Pipeline](#7-ai--rag-pipeline)
+- [8. Frontend & Streaming](#8-frontend--streaming)
+- [9. Reports, Discord & Gmail](#9-reports-discord--gmail)
+- [10. Troubleshooting](#10-troubleshooting)
+
+---
+
+## 1. Project Overview
+
+This project is an **AI‑powered assistant** for:
+
+- **Business Intelligence (BI)**  
+  Ask questions like:
+  - "ما هو إجمالي المبيعات حسب المنطقة؟"
+  - "Top 10 products by profit"
+
+  The system translates questions into SQL, runs them against a **PostgreSQL** “Superstore” schema, and returns structured insights.
+
+- **SDAIA AI Ethics Compliance**  
+  Ask questions like:
+  - "ما هي متطلبات الشفافية في أنظمة الذكاء الاصطناعي؟"
+  - "What does SDAIA say about data protection?"
+
+  Answers are generated with a **RAG pipeline** over the official SDAIA AI principles PDF, validated, and the cited paragraphs are highlighted in a **new PDF** saved to `data/`.
+
+The user interacts through a **custom web UI** modelled after chat.openai.com with:
+- Left sidebar (new chat + quick prompts)
+- Centered chat messages
+- Bottom input bar with a circular send button and **streaming responses**
+
+---
+
+## 2. High‑Level Architecture
+
+```text
+Browser (frontend)
+  └── React-based chat UI (WebSocket)
+        ↓  ws://<host>:8000/ws/chat
+FastAPI WebSocket server (adk-chatbot/server.py)
+  └── Google ADK Runner (streaming SSE events)
+        ↓
+Parent Agent (orchestrator, ADK LlmAgent)
+  ├── Analytics Agent        → PostgreSQL (Superstore data)
+  ├── Validator Agent        → Safety & quality checks (analytics)
+  ├── Compliance Agent       → RAG over Chroma + OpenAI
+  ├── RAG Validator Agent    → Validates compliance answers
+  ├── Report Agent           → HTML reports (analytics & compliance)
+  └── PDF Highlighter Tool   → PyMuPDF + Arabic cross-encoder (AI PDF)
+
+External services:
+  - PostgreSQL (existing DB with Superstore view)
+  - Discord bot (report review & approval)
+  - Gmail API (email delivery on approval)
+  - OpenAI API (chat + embeddings)
+  - ChromaDB persisted in ./adk-chatbot/data/chroma_db
+```
+
+---
+
+## 3. Repository Layout
+
+```text
+superstore-ai-chatbot/
+├── adk-chatbot/                 # Main backend / agents / tools
+│   ├── agents/
+│   │   ├── parent_agent.py      # Orchestrator (Google ADK)
+│   │   ├── analytics_agent.py   # BI / SQL over Superstore
+│   │   ├── validator_agent.py   # Analytics validator
+│   │   ├── compliance_agent.py  # SDAIA RAG agent
+│   │   ├── rag_validator_agent.py
+│   │   └── report_agent.py      # HTML report generator (Discord + Gmail)
+│   ├── tools/
+│   │   └── pdf_highlighter.py   # Highlight SDAIA PDF paragraphs
+│   ├── scripts/
+│   │   └── create_vector_db.py  # Build ChromaDB from SDAIA chunks
+│   ├── integrations/
+│   │   ├── discord_integration.py
+│   │   ├── gmail_integration.py
+│   │   └── report_handler.py
+│   ├── data/                    # ai-principles.pdf, sdaia_chunks.json, highlighted PDFs, chroma_db
+│   ├── server.py                # FastAPI WebSocket + ADK runner
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── docker-compose.yml       # Standalone chatbot service for local / Coolify
+│
+├── frontend/                    # Static streaming UI
+│   ├── index.html               # Loads fonts, React, app.js
+│   ├── styles.css               # ChatGPT-like dark UI
+│   └── app.js                   # React-based chat app (WebSocket)
+│
+├── docker-compose.yml           # Root compose (chatbot + n8n, optional)
+└── README.md                    # You are here
+```
+
+---
+
+## 4. Prerequisites
+
+### 4.1 Software
+
+- **Python** 3.11+
+- **Docker** & **Docker Compose**
+- **PostgreSQL** (Superstore analytics DB)
+- **Node / n8n** (optional, for your legacy n8n flows)
+
+### 4.2 Environment Variables (`adk-chatbot/.env`)
+
+Create `adk-chatbot/.env` with at least:
+
+```bash
+OPENAI_API_KEY=sk-...
+MODEL_NAME=gpt-4o-mini
+
+# Database for analytics_agent
+PG_HOST=...
+PG_PORT=5432
+PG_USER=...
+PG_PASSWORD=...
+PG_DATABASE=...
+
+# Discord
+DISCORD_BOT_TOKEN=...
+DISCORD_REPORT_CHANNEL_ID=...
+
+# Gmail
+GMAIL_SENDER=you@example.com
+```
+
+Also place:
+
+- `adk-chatbot/gmail_credentials.json` (OAuth client secrets)
+- `adk-chatbot/token.pickle` (generated after first OAuth flow)
+
+> **Note:** These files are .gitignored and must not be committed.
+
+### 4.3 Superstore Database
+
+The analytics agent expects a **processed Superstore view** (similar to):
+
+```sql
+CREATE VIEW v_processed_superstore AS
+SELECT
+  id,
+  raw_id,
+  ship_mode,
+  segment,
+  country,
+  city,
+  state,
+  postal_code,
+  region,
+  category,
+  sub_category,
+  sales,
+  quantity,
+  discount,
+  profit,
+  profit_margin,
+  processed_at
+FROM your_source_table;
+```
+
+Dimensions such as `region`, `segment`, `category`, etc. are used by the analytics prompts.
+
+---
+
+## 5. Local Development
+
+### 5.1 Backend (FastAPI + ADK)
+
+```bash
+cd adk-chatbot
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# Run WebSocket server
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
+
+The backend exposes:
+
+- WebSocket: `ws://localhost:8000/ws/chat`
+
+### 5.2 Build / Refresh SDAIA Vector DB
+
+```bash
+cd adk-chatbot
+python scripts/create_vector_db.py
+```
+
+This reads `data/sdaia_chunks.json` + `data/ai-principles.pdf` and writes a ChromaDB store to `data/chroma_db`.
+
+### 5.3 Frontend (Static)
+
+```bash
+cd frontend
+python -m http.server 5173
+```
+
+Then open:
+
+- `http://localhost:5173/index.html`
+
+Make sure `WS_URL` in `frontend/app.js` matches your backend:
+
+```javascript
+const WS_URL = "ws://localhost:8000/ws/chat";
+```
+
+---
+
+## 6. Docker & Deployment
+
+### 6.1 Local Docker Compose (chatbot only)
+
+```bash
+cd adk-chatbot
+docker compose up --build
+```
+
+This:
+
+- Builds from `Dockerfile`.
+- Exposes the chatbot on **port 8001** (host) → `8000` (container) if configured that way in `docker-compose.yml`.
+- Mounts:
+  - `./data:/app/data` (PDFs, highlighted PDFs, Chroma DB)
+  - `model_cache:/root/.cache` (HuggingFace models for the Arabic cross‑encoder)
+
+Adjust `WS_URL` in the frontend to:
+
+```javascript
+const WS_URL = "ws://<host>:8001/ws/chat";
+```
+
+### 6.2 Root Docker Compose (chatbot + n8n)
+
+At the repository root:
+
+```bash
+docker compose up -d
+```
+
+This spins up:
+
+- `chatbot` (from `adk-chatbot/`)
+- `n8n` (optional workflow engine used in earlier phases)
+
+### 6.3 GCP + Coolify Deployment
+
+1. **GCP VM**
+   - Create a Compute Engine VM with Docker installed.
+   - Open ports (e.g. 8001 / 80 / 443) in the firewall.
+
+2. **Coolify**
+   - Install Coolify on the VM.
+   - Add a **Docker Compose** or **Dockerfile** application pointing at this repo.
+   - Configure environment variables and volumes:
+     - `data` → `/app/data`
+     - `model_cache` → `/root/.cache`
+
+3. **Domain**
+   - Point DNS (e.g. `chatbot.yourdomain.com`) at the VM IP.
+   - In Coolify, configure the domain for the chatbot app and (optionally) HTTPS.
+
+4. **Post‑deploy**
+   - Run `python scripts/create_vector_db.py` inside the chatbot container once to build Chroma.
+   - Copy `gmail_credentials.json` and `token.pickle` into the container (or bind‑mount via volume).
+
+---
+
+## 7. AI & RAG Pipeline
+
+### 7.1 Models
+
+- **Chat / reasoning**: `gpt-4o-mini` (via ADK LiteLlm).
+- **Embeddings**: `text-embedding-3-small` for:
+  - SDAIA RAG (compliance_agent).
+  - Vector DB creation.
+- **Arabic cross‑encoder**: `Omartificial-Intelligence-Space/ARA-Reranker-V1` to match answer points to PDF paragraphs.
+
+### 7.2 Compliance RAG Flow
+
+1. User asks a SDAIA question (Arabic / English).
+2. `compliance_agent.ask_sdaia()`:
+   - Embeds the question.
+   - Queries Chroma collection `sdaia_ai_principles`.
+   - Builds a **context string** with `[المصدر i - صفحة x]` blocks.
+   - Asks `gpt-4o-mini` to answer using only that context, adding `(صفحة X)` citations.
+   - Returns:
+     ```text
+     VALIDATION_FORMAT:
+     QUESTION: ...
+     CONTEXT: ...
+     ANSWER: ...
+     ```
+3. `rag_validator_agent` receives `USER QUESTION`, `RETRIEVED CONTEXT`, and `GENERATED ANSWER` and responds:
+   - `APPROVED` (most of the time), or
+   - `RETRY: ...` for serious hallucinations / missing citations.
+4. On approval, `highlight_sdaia_pdf(answer_text)`:
+   - Parses `ANSWER` to extract numbered points and `(صفحة N)` citations.
+   - For each page:
+     - Extracts paragraphs via PyMuPDF.
+     - Scores with the Arabic cross‑encoder.
+     - Highlights the best‑matching paragraph.
+   - Writes `sdaia_highlighted_YYYYMMDD_HHMMSS.pdf` into `data/`.
+5. Parent agent returns a final answer that includes:
+   - The structured explanation.
+   - List of referenced pages.
+   - A message that a highlighted PDF has been created.
+
+---
+
+## 8. Frontend & Streaming
+
+The frontend is a single‑page app (`frontend/index.html`, `frontend/app.js`, `frontend/styles.css`) with:
+
+- **Layout**
+  - Fixed **260px sidebar** containing:
+    - `New chat` button.
+    - List of **quick prompts** wired to insert example questions.
+  - Center chat area:
+    - Max width ≈ 720–820px.
+    - Assistant bubbles on left, user on right.
+  - Bottom input bar:
+    - Textarea that autosizes up to a max height.
+    - Circular **send button**:
+      - `44×44px`, `background: #E5E5E5`, `color: #000`, `border-radius: 999px`, no border.
+      - SVG upward arrow icon.
+
+- **Streaming Implementation**
+  - WebSocket connection created on mount:
+    - Reconnects automatically on close.
+  - State:
+    - `messages`: committed conversation.
+    - `streamBuffer`: current streaming assistant text.
+    - `streamBufferRef`: ensures the `done` handler sees the latest buffer.
+  - Protocol:
+    - `{"type": "status", "text": "thinking"}` → shows typing/“thinking”, but does **not** clear buffer.
+    - `{"type": "chunk", "text": "..."}` → append to `streamBuffer` (plain text only).
+    - `{"type": "done"}` → commit `streamBuffer` as a new assistant message and clear the buffer.
+  - **Markdown rendering** runs only on committed messages to avoid performance issues during streaming.
+
+- **Typography**
+  - Google Fonts: `Inter` + `Noto Sans Arabic`.
+  - Global font applied to `html, body, button, input, textarea` via `--font-sans`.
+  - `direction: auto; unicode-bidi: plaintext;` on `.md, .plain, .md-stream, .bubble, textarea` to support mixed Arabic/English.
+
+---
+
+## 9. Reports, Discord & Gmail
+
+When the user requests a **report** (analytics or compliance):
+
+1. **Parent agent** inspects conversation history and extracts:
+   - Last analytics question + results + insight **or**
+   - A compliance summary of SDAIA Q&As.
+2. Calls `report_agent`:
+   - `generate_analytics_report(question, results, insight)` **or**
+   - `generate_compliance_report(compliance_summary)`.
+3. `report_agent`:
+   - Uses OpenAI to generate a structured HTML report.
+   - Calls `discord_integration.send_report_for_approval()` to post a card in your Discord review channel with **Approve/Reject** buttons.
+4. On **Approve**:
+   - `gmail_integration` sends the HTML report to the configured recipient.
+5. On **Reject**:
+   - The flow stops silently; the user is not emailed.
+
+---
+
+## 10. Troubleshooting
+
+### 10.1 Chroma / Compliance Errors
+
+- **Symptom:** `chromadb.errors.NotFoundError: Collection [sdaia_ai_principles] does not exist`  
+  **Fix:**
+  1. Ensure `data/sdaia_chunks.json` and `data/ai-principles.pdf` exist inside the container.
+  2. Run `python scripts/create_vector_db.py` inside `adk-chatbot`.
+
+- **Symptom:** MacOS Rust panic from Chroma backend  
+  **Fix:** Already mitigated by lazy Chroma initialization and defensive error handling in `compliance_agent.py`. If DB is corrupted, delete `data/chroma_db` and rebuild.
+
+### 10.2 Discord / Gmail
+
+- **Symptom:** “Token has been expired or revoked” from Gmail  
+  **Fix:** Delete `token.pickle`, re‑run the Gmail OAuth helper (see `gmail_integration.get_gmail_service()`), and copy the new token into the container.
+
+- **Symptom:** No Discord messages  
+  **Fix:** Verify `DISCORD_BOT_TOKEN`, channel ID, and that the bot has permission to post in the configured channel.
+
+### 10.3 WebSocket / Streaming
+
+- **Symptom:** Frontend stuck on “Connecting”  
+  **Fix:** Ensure `uvicorn server:app --port 8000` (or container port 8001) is running and `WS_URL` matches the actual host/port.
+
+- **Symptom:** Duplicate answer text  
+  **Fix:** This was addressed by computing deltas from ADK snapshot events and filtering non‑assistant authors; ensure you’re running the latest `server.py`.
+
+---
+
+This README documents the final BI + SDAIA Compliance Chatbot: architecture, setup, deployment, and operations. For more details, check the docstrings in `agents/`, `tools/`, and `integrations/`.
+## BI + SDAIA Compliance Chatbot (Streaming, RAG, PDF Highlighting)
+
+An end‑to‑end AI assistant that combines **business analytics** and **AI ethics compliance** in a single, ChatGPT‑style experience.
+
+- Natural‑language analytics over the Superstore dataset (PostgreSQL)
+- SDAIA AI principles **RAG** assistant with page‑level PDF highlighting
+- Modern streaming chat UI (frontend) with **true token‑level streaming**
+- Multi‑agent orchestration using **Google ADK**
+- Human‑in‑the‑loop report workflow via **Discord + Gmail**
+- Fully containerized and deployable to **GCP** via **Coolify**
+
+---
+
+## Table of Contents
+
+- [1. Project Overview](#1-project-overview)
+- [2. High‑Level Architecture](#2-high-level-architecture)
+- [3. Repository Layout](#3-repository-layout)
+- [4. Prerequisites](#4-prerequisites)
+- [5. Local Development](#5-local-development)
+- [6. Docker & Deployment](#6-docker--deployment)
+- [7. AI & RAG Pipeline](#7-ai--rag-pipeline)
+- [8. Frontend & Streaming](#8-frontend--streaming)
+- [9. Reports, Discord & Gmail](#9-reports-discord--gmail)
+- [10. Troubleshooting](#10-troubleshooting)
+
+---
+
+## 1. Project Overview
+
+This project is an **AI‑powered assistant** for:
+
+- **Business Intelligence (BI)**  
+  Ask questions like:
+  - "ما هو إجمالي المبيعات حسب المنطقة؟"
+  - "Top 10 products by profit"
+
+  The system translates questions into SQL, runs them against a **PostgreSQL** “Superstore” schema, and returns structured insights.
+
+- **SDAIA AI Ethics Compliance**  
+  Ask questions like:
+  - "ما هي متطلبات الشفافية في أنظمة الذكاء الاصطناعي؟"
+  - "What does SDAIA say about data protection?"
+
+  Answers are generated with a **RAG pipeline** over the official SDAIA AI principles PDF, validated, and the cited paragraphs are highlighted in a **new PDF** saved to `data/`.
+
+The user interacts through a **custom web UI** modelled after chat.openai.com with:
+- Left sidebar (new chat + quick prompts)
+- Centered chat messages
+- Bottom input bar with a circular send button and **streaming responses**
+
+---
+
+## 2. High‑Level Architecture
+
+```text
+Browser (frontend)
+  └── React-based chat UI (WebSocket)
+        ↓  ws://<host>:8000/ws/chat
+FastAPI WebSocket server (adk-chatbot/server.py)
+  └── Google ADK Runner (streaming SSE events)
+        ↓
+Parent Agent (orchestrator, ADK LlmAgent)
+  ├── Analytics Agent        → PostgreSQL (Superstore data)
+  ├── Validator Agent        → Safety & quality checks (analytics)
+  ├── Compliance Agent       → RAG over Chroma + OpenAI
+  ├── RAG Validator Agent    → Validates compliance answers
+  ├── Report Agent           → HTML reports (analytics & compliance)
+  └── PDF Highlighter Tool   → PyMuPDF + Arabic cross-encoder (AI PDF)
+
+External services:
+  - PostgreSQL (existing DB with Superstore view)
+  - Discord bot (report review & approval)
+  - Gmail API (email delivery on approval)
+  - OpenAI API (chat + embeddings)
+  - ChromaDB persisted in ./adk-chatbot/data/chroma_db
+```
+
+---
+
+## 3. Repository Layout
+
+```text
+superstore-ai-chatbot/
+├── adk-chatbot/                 # Main backend / agents / tools
+│   ├── agents/
+│   │   ├── parent_agent.py      # Orchestrator (Google ADK)
+│   │   ├── analytics_agent.py   # BI / SQL over Superstore
+│   │   ├── validator_agent.py   # Analytics validator
+│   │   ├── compliance_agent.py  # SDAIA RAG agent
+│   │   ├── rag_validator_agent.py
+│   │   └── report_agent.py      # HTML report generator (Discord + Gmail)
+│   ├── tools/
+│   │   └── pdf_highlighter.py   # Highlight SDAIA PDF paragraphs
+│   ├── scripts/
+│   │   └── create_vector_db.py  # Build ChromaDB from SDAIA chunks
+│   ├── integrations/
+│   │   ├── discord_integration.py
+│   │   ├── gmail_integration.py
+│   │   └── report_handler.py
+│   ├── data/                    # ai-principles.pdf, sdaia_chunks.json, highlighted PDFs, chroma_db
+│   ├── server.py                # FastAPI WebSocket + ADK runner
+│   ├── requirements.txt
+│   ├── Dockerfile
+│   └── docker-compose.yml       # Standalone chatbot service for local / Coolify
+│
+├── frontend/                    # Static streaming UI
+│   ├── index.html               # Loads fonts, React, app.js
+│   ├── styles.css               # ChatGPT-like dark UI
+│   └── app.js                   # React-based chat app (WebSocket)
+│
+├── docker-compose.yml           # Root compose (chatbot + n8n, optional)
+└── README.md                    # You are here
+```
+
+---
+
+## 4. Prerequisites
+
+### 4.1 Software
+
+- **Python** 3.11+
+- **Docker** & **Docker Compose**
+- **PostgreSQL** (Superstore analytics DB)
+- **Node / n8n** (optional, for your legacy n8n flows)
+
+### 4.2 Environment Variables (`adk-chatbot/.env`)
+
+Create `adk-chatbot/.env` with at least:
+
+```bash
+OPENAI_API_KEY=sk-...
+MODEL_NAME=gpt-4o-mini
+
+# Database for analytics_agent
+PG_HOST=...
+PG_PORT=5432
+PG_USER=...
+PG_PASSWORD=...
+PG_DATABASE=...
+
+# Discord
+DISCORD_BOT_TOKEN=...
+DISCORD_REPORT_CHANNEL_ID=...
+
+# Gmail
+GMAIL_SENDER=you@example.com
+```
+
+Also place:
+
+- `adk-chatbot/gmail_credentials.json` (OAuth client secrets)
+- `adk-chatbot/token.pickle` (generated after first OAuth flow)
+
+> **Note:** These files are .gitignored and must not be committed.
+
+### 4.3 Superstore Database
+
+The analytics agent expects a **processed Superstore view** (similar to):
+
+```sql
+CREATE VIEW v_processed_superstore AS
+SELECT
+  id,
+  raw_id,
+  ship_mode,
+  segment,
+  country,
+  city,
+  state,
+  postal_code,
+  region,
+  category,
+  sub_category,
+  sales,
+  quantity,
+  discount,
+  profit,
+  profit_margin,
+  processed_at
+FROM your_source_table;
+```
+
+Dimensions such as `region`, `segment`, `category`, etc. are used by the analytics prompts.
+
+---
+
+## 5. Local Development
+
+### 5.1 Backend (FastAPI + ADK)
+
+```bash
+cd adk-chatbot
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# Run WebSocket server
+uvicorn server:app --reload --host 0.0.0.0 --port 8000
+```
+
+The backend exposes:
+
+- WebSocket: `ws://localhost:8000/ws/chat`
+
+### 5.2 Build / Refresh SDAIA Vector DB
+
+```bash
+cd adk-chatbot
+python scripts/create_vector_db.py
+```
+
+This reads `data/sdaia_chunks.json` + `data/ai-principles.pdf` and writes a ChromaDB store to `data/chroma_db`.
+
+### 5.3 Frontend (Static)
+
+```bash
+cd frontend
+python -m http.server 5173
+```
+
+Then open:
+
+- `http://localhost:5173/index.html`
+
+Make sure `WS_URL` in `frontend/app.js` matches your backend:
+
+```javascript
+const WS_URL = "ws://localhost:8000/ws/chat";
+```
+
+---
+
+## 6. Docker & Deployment
+
+### 6.1 Local Docker Compose (chatbot only)
+
+```bash
+cd adk-chatbot
+docker compose up --build
+```
+
+This:
+
+- Builds from `Dockerfile`.
+- Exposes the chatbot on **port 8001** (host) → `8000` (container) if configured that way in `docker-compose.yml`.
+- Mounts:
+  - `./data:/app/data` (PDFs, highlighted PDFs, Chroma DB)
+  - `model_cache:/root/.cache` (HuggingFace models for the Arabic cross‑encoder)
+
+Adjust `WS_URL` in the frontend to:
+
+```javascript
+const WS_URL = "ws://<host>:8001/ws/chat";
+```
+
+### 6.2 Root Docker Compose (chatbot + n8n)
+
+At the repository root:
+
+```bash
+docker compose up -d
+```
+
+This spins up:
+
+- `chatbot` (from `adk-chatbot/`)
+- `n8n` (optional workflow engine used in earlier phases)
+
+### 6.3 GCP + Coolify Deployment
+
+1. **GCP VM**
+   - Create a Compute Engine VM with Docker installed.
+   - Open ports (e.g. 8001 / 80 / 443) in the firewall.
+
+2. **Coolify**
+   - Install Coolify on the VM.
+   - Add a **Docker Compose** or **Dockerfile** application pointing at this repo.
+   - Configure environment variables and volumes:
+     - `data` → `/app/data`
+     - `model_cache` → `/root/.cache`
+
+3. **Domain**
+   - Point DNS (e.g. `chatbot.yourdomain.com`) at the VM IP.
+   - In Coolify, configure the domain for the chatbot app and (optionally) HTTPS.
+
+4. **Post‑deploy**
+   - Run `python scripts/create_vector_db.py` inside the chatbot container once to build Chroma.
+   - Copy `gmail_credentials.json` and `token.pickle` into the container (or bind‑mount via volume).
+
+---
+
+## 7. AI & RAG Pipeline
+
+### 7.1 Models
+
+- **Chat / reasoning**: `gpt-4o-mini` (via ADK LiteLlm).
+- **Embeddings**: `text-embedding-3-small` for:
+  - SDAIA RAG (compliance_agent).
+  - Vector DB creation.
+- **Arabic cross‑encoder**: `Omartificial-Intelligence-Space/ARA-Reranker-V1` to match answer points to PDF paragraphs.
+
+### 7.2 Compliance RAG Flow
+
+1. User asks a SDAIA question (Arabic / English).
+2. `compliance_agent.ask_sdaia()`:
+   - Embeds the question.
+   - Queries Chroma collection `sdaia_ai_principles`.
+   - Builds a **context string** with `[المصدر i - صفحة x]` blocks.
+   - Asks `gpt-4o-mini` to answer using only that context, adding `(صفحة X)` citations.
+   - Returns:
+     ```text
+     VALIDATION_FORMAT:
+     QUESTION: ...
+     CONTEXT: ...
+     ANSWER: ...
+     ```
+3. `rag_validator_agent` receives `USER QUESTION`, `RETRIEVED CONTEXT`, and `GENERATED ANSWER` and responds:
+   - `APPROVED` (most of the time), or
+   - `RETRY: ...` for serious hallucinations / missing citations.
+4. On approval, `highlight_sdaia_pdf(answer_text)`:
+   - Parses `ANSWER` to extract numbered points and `(صفحة N)` citations.
+   - For each page:
+     - Extracts paragraphs via PyMuPDF.
+     - Scores with the Arabic cross‑encoder.
+     - Highlights the best‑matching paragraph.
+   - Writes `sdaia_highlighted_YYYYMMDD_HHMMSS.pdf` into `data/`.
+5. Parent agent returns a final answer that includes:
+   - The structured explanation.
+   - List of referenced pages.
+   - A message that a highlighted PDF has been created.
+
+---
+
+## 8. Frontend & Streaming
+
+The frontend is a single‑page app (`frontend/index.html`, `frontend/app.js`, `frontend/styles.css`) with:
+
+- **Layout**
+  - Fixed **260px sidebar** containing:
+    - `New chat` button.
+    - List of **quick prompts** wired to insert example questions.
+  - Center chat area:
+    - Max width ≈ 720–820px.
+    - Assistant bubbles on left, user on right.
+  - Bottom input bar:
+    - Textarea that autosizes up to a max height.
+    - Circular **send button**:
+      - `44×44px`, `background: #E5E5E5`, `color: #000`, `border-radius: 999px`, no border.
+      - SVG upward arrow icon.
+
+- **Streaming Implementation**
+  - WebSocket connection created on mount:
+    - Reconnects automatically on close.
+  - State:
+    - `messages`: committed conversation.
+    - `streamBuffer`: current streaming assistant text.
+    - `streamBufferRef`: ensures the `done` handler sees the latest buffer.
+  - Protocol:
+    - `{"type": "status", "text": "thinking"}` → shows typing/“thinking”, but does **not** clear buffer.
+    - `{"type": "chunk", "text": "..."}` → append to `streamBuffer` (plain text only).
+    - `{"type": "done"}` → commit `streamBuffer` as a new assistant message and clear the buffer.
+  - **Markdown rendering** runs only on committed messages to avoid performance issues during streaming.
+
+- **Typography**
+  - Google Fonts: `Inter` + `Noto Sans Arabic`.
+  - Global font applied to `html, body, button, input, textarea` via `--font-sans`.
+  - `direction: auto; unicode-bidi: plaintext;` on `.md, .plain, .md-stream, .bubble, textarea` to support mixed Arabic/English.
+
+---
+
+## 9. Reports, Discord & Gmail
+
+When the user requests a **report** (analytics or compliance):
+
+1. **Parent agent** inspects conversation history and extracts:
+   - Last analytics question + results + insight **or**
+   - A compliance summary of SDAIA Q&As.
+2. Calls `report_agent`:
+   - `generate_analytics_report(question, results, insight)` **or**
+   - `generate_compliance_report(compliance_summary)`.
+3. `report_agent`:
+   - Uses OpenAI to generate a structured HTML report.
+   - Calls `discord_integration.send_report_for_approval()` to post a card in your Discord review channel with **Approve/Reject** buttons.
+4. On **Approve**:
+   - `gmail_integration` sends the HTML report to the configured recipient.
+5. On **Reject**:
+   - The flow stops silently; the user is not emailed.
+
+---
+
+## 10. Troubleshooting
+
+### 10.1 Chroma / Compliance Errors
+
+- **Symptom:** `chromadb.errors.NotFoundError: Collection [sdaia_ai_principles] does not exist`  
+  **Fix:**
+  1. Ensure `data/sdaia_chunks.json` and `data/ai-principles.pdf` exist inside the container.
+  2. Run `python scripts/create_vector_db.py` inside `adk-chatbot`.
+
+- **Symptom:** MacOS Rust panic from Chroma backend  
+  **Fix:** Already mitigated by lazy Chroma initialization and defensive error handling in `compliance_agent.py`. If DB is corrupted, delete `data/chroma_db` and rebuild.
+
+### 10.2 Discord / Gmail
+
+- **Symptom:** “Token has been expired or revoked” from Gmail  
+  **Fix:** Delete `token.pickle`, re‑run the Gmail OAuth helper (see `gmail_integration.get_gmail_service()`), and copy the new token into the container.
+
+- **Symptom:** No Discord messages  
+  **Fix:** Verify `DISCORD_BOT_TOKEN`, channel ID, and that the bot has permission to post in the configured channel.
+
+### 10.3 WebSocket / Streaming
+
+- **Symptom:** Frontend stuck on “Connecting”  
+  **Fix:** Ensure `uvicorn server:app --port 8000` (or container port 8001) is running and `WS_URL` matches the actual host/port.
+
+- **Symptom:** Duplicate answer text  
+  **Fix:** This was addressed by computing deltas from ADK snapshot events and filtering non‑assistant authors; ensure you’re running the latest `server.py`.
+
+---
+
+This README is the canonical reference for the **completed BI + SDAIA Compliance Chatbot**: architecture, setup, deployment, and operations. For more implementation details, refer to the docstrings and comments in the `agents/`, `tools/`, and `integrations/` modules.
 # AI-Powered Business Intelligence Chatbot
 
 A natural language interface to query and analyze business data, built with n8n workflow automation and powered by OpenAI GPT models.
